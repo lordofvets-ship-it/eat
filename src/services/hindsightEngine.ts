@@ -1,0 +1,589 @@
+import fs from "fs";
+import path from "path";
+import { applyAuthoritativeBudget } from "../utils/memoryGovernance.js";
+import { 
+  HindsightMemoryEntry, 
+  HindsightMemoryCategory, 
+  HindsightRecallResult, 
+  HindsightBankStats 
+} from "../types.js";
+
+// Optional Hindsight official client
+let hindsightClientInstance: any = null;
+let isHindsightClientInitializing = false;
+
+async function getHindsightClient(): Promise<any> {
+  if (hindsightClientInstance || isHindsightClientInitializing) return hindsightClientInstance;
+  isHindsightClientInitializing = true;
+  try {
+    const hindsightModule = await import("@vectorize-io/hindsight-client");
+    if (hindsightModule && hindsightModule.HindsightClient) {
+      const hindsightUrl = process.env.HINDSIGHT_API_URL || "http://localhost:8888";
+      hindsightClientInstance = new hindsightModule.HindsightClient({ baseUrl: hindsightUrl });
+      console.log(`[Hindsight] Official client initialized for ${hindsightUrl}`);
+    }
+  } catch (err) {
+    console.log("[Hindsight] Running embedded autonomous memory engine.");
+  } finally {
+    isHindsightClientInitializing = false;
+  }
+  return hindsightClientInstance;
+}
+
+const DATA_DIR = path.resolve(process.cwd(), "data");
+const BANK_FILE = path.join(DATA_DIR, "hindsight_memory_bank.json");
+
+const DEFAULT_CONFIRMED_MEMORIES: HindsightMemoryEntry[] = [
+  {
+    id: "mem-dir-009",
+    category: "mental_models",
+    categoryArabic: "النماذج الذهنية وتوجيهات التقييم",
+    title: "حظر التخمين الصارم في التفريغ والالتزام بالتحليل المرتكز على الأدلة فقط",
+    content: "يُمنع منعاً باتاً تخمين أو استنتاج أي كلام غير مسموع، أو تصحيح النص لجعله منطقياً، أو إكمال الجمل الناقصة، أو اختراع ردود لم تُسمع. يتم تفريغ ما يُسمع فعلياً فقط، وأي كلمة غير واضحة أو مشوشة تُكتب '[غير مؤكد]' دون تخمين كلمة بديلة. وفي تقييم جميع المعايير، يُمنع افتراض نوايا أو اختراع أفعال لم تحدث، ويُعتمد حصراً على ما هو مكتوب في التفريغ أو مسموع بوضوح مع إسناد كل نتيجة إلى نص صريح (Snippet) وتوقيت زمني (Timestamp).",
+    entities: ["حظر التخمين", "[غير مؤكد]", "التحليل المرتكز على الأدلة", "التفريغ الحرفي"],
+    tags: ["تفريغ", "دقة", "بدون_تخمين", "أدلة", "معيار_مؤكد"],
+    importance: "critical",
+    source: "تأكيد مباشر من المشرف (User Request)",
+    createdAt: "2026-10-03T00:08:00.000Z"
+  },
+  {
+    id: "mem-dir-018",
+    category: "mental_models",
+    categoryArabic: "النماذج الذهنية وتوجيهات التقييم",
+    title: "الفصل الصوتي الدقيق بين كلام العميل وكلام الزميل وحظر خلط أو عكس المتحدثين",
+    content: "يُمنع منعاً باتاً نسبة كلام العميل للزميل، أو نسبة كلام الزميل للعميل في تفريغ المكالمات. أسئلة الزميل لاستكمال واستقبال باقي الطلبات ('إيه تاني؟'، 'معاك إيه تاني؟'، 'وايه تاني؟'، 'تؤمر بإيه تاني يا فندم؟') تُنسب حصرياً لـ 'موظف خدمة العملاء'. وردود وتحديدات العميل لأدويته ومستحضراته ('المرهم اللي هو الكارباميد'، 'الكريم اللي هو كذا'، 'عايز علبة كذا') تُنسب حصرياً وبشكل قاطع لـ 'العميل'، ويُحظر تماماً احتساب كلام العميل هذا كألفاظ غير احترافية للزميل.",
+    entities: ["فصل المتحدثين", "speaker", "موظف خدمة العملاء", "العميل", "حظر عكس المتحدثين", "إيه تاني", "المرهم اللي هو"],
+    tags: ["تفريغ", "متحدث", "دقة", "فصل_صوتي", "معيار_مؤكد", "hindsight"],
+    importance: "critical",
+    source: "تأكيد مباشر من المشرف (User Request)",
+    createdAt: "2026-10-14T08:20:00.000Z"
+  },
+  {
+    id: "mem-dir-019",
+    category: "mental_models",
+    categoryArabic: "النماذج الذهنية وتوجيهات التقييم",
+    title: "تدقيق اسم العميل بدقة بالغة وحظر احتساب مناداة العميل إذا لم ينادِ الزميل عليه صراحة بالاسم",
+    content: "يُمنع منعاً باتاً احتساب معيار 'ذكر اسم العميل من خلال الزميل' (isMentionedByAgent) إلا إذا نادى الزميل (الموظف) على العميل صراحةً وبشكل مباشر باسمه الشخصي (مثل 'يا شيماء'، 'يا أستاذ يزن'، 'اتفضل يا يزن'). يُحظر حظراً تاماً وقاطعاً: 1) احتساب عبارات الترحيب العادية ('أهلاً وسهلاً بحضرتك'، 'أقدر أساعدك إزاي؟') أو عبارات الإنهاء ('شرفتينا بالاتصال، بالشفاء إن شاء الله') كمناداة باسم العميل! 2) احتساب قراءة بيانات السيستم ('الرقم مسجل باسم...') كمناداة للعميل. 3) إذا أبلغ العميل/العميلة عن اسمه في المكالمة (مثل 'يزن علاء') ولكن الزميل لم ينادِ عليه باسمه، يُسجل الاسم المكتشف للعميل بدقة (يزن علاء) مع تسجيل isMentionedByAgent = false و mentionCount = 0 و mentionsTimestamps = []، وتوثيق توقيت إبلاغ العميل عن اسمه دون منح درجة المناداة للزميل.",
+    entities: ["اسم العميل", "customerNameAnalysis", "isMentionedByAgent", "مناداة العميل", "يزن علاء", "حظر التخمين", "بيانات السيستم"],
+    tags: ["اسم_العميل", "مناداة", "دقة", "معيار_مؤكد", "hindsight"],
+    importance: "critical",
+    source: "تأكيد مباشر من المشرف (User Request)",
+    createdAt: "2026-10-14T08:45:00.000Z"
+  },
+  {
+    id: "mem-dir-020",
+    category: "mental_models",
+    categoryArabic: "النماذج الذهنية وتوجيهات التقييم",
+    title: "شرط اعتماد نبرة الابتسامة (أكبر من 70%) وخصم درجتين بالمقدمة ودرجتين بالمهارات عند عدم التعدي",
+    content: "فى التقارير والتقييمات: عند حساب وتقييم نبرة صوت الزميل(ة)، يُحظر حظراً تاماً اعتماد النبرة بأنها 'بها ابتسامة' (hasSmile = true) إلا بعد أن تتعدى نسبة الابتسامة والبشاشة نسبة أكبر من 70% قطعيّاً (> 70%). وإذا لم تتعدَّ النسبة 70% (أي <= 70% أو غياب الابتسامة): يُلغى اعتماد الابتسامة، وتُنقص درجتان (-2) في قسم المقدمة والترحيب، وتُنقص درجتان (-2) في قسم المهارات (نبرة الصوت) في بطاقة تقييم المكالمة ونموذج ضبط الجودة.",
+    entities: ["نبرة الصوت", "الابتسامة", "70%", "المقدمة", "المهارات", "خصم درجتين", "agentToneAnalysis", "qaScorecard"],
+    tags: ["نبرة", "ابتسامة", "نسبة_70", "مقدمة", "مهارات", "خصم", "معيار_مؤكد", "hindsight"],
+    importance: "critical",
+    source: "تأكيد مباشر من المشرف (User Request)",
+    createdAt: "2026-10-15T00:35:00.000Z"
+  },
+  {
+    id: "mem-dir-021",
+    category: "mental_models",
+    categoryArabic: "النماذج الذهنية وتوجيهات التقييم",
+    title: "حظر إدراج أو اعتماد (حاجة / حاجه) نهائياً ومطلقاً ضمن الألقاب",
+    content: "يُمنع منعاً باتاً وقاطعاً إدراج أو اعتماد كلمة 'حاجة' أو 'حاجه' ضمن ألقاب العملاء (customerTitleAnalysis) نهائياً ومطلقاً تحت أي ظرف، سواء وردت في سياق عام ('محتاجة حاجة تانية'، 'عايزة حاجة'، 'هنحتاج حاجة') أو في سياق مناداة عامة. في حال ورودها، لا تُحتسب كلقب معتمد للعميل، ويُسجل اللقب المكتشف: 'لم يذكر' مع isTitleUsedByAgent = false و titleMentionCount = 0.",
+    entities: ["حاجة", "حاجه", "customerTitleAnalysis", "ألقاب", "حظر اعتماد حاجة", "لقب العميل"],
+    tags: ["لقب", "حاجة", "حاجه", "حظر", "معيار_مؤكد", "hindsight"],
+    importance: "critical",
+    source: "تأكيد مباشر من المشرف (User Request)",
+    createdAt: "2026-10-15T00:46:00.000Z"
+  },
+  {
+    id: "mem-dir-022",
+    category: "mental_models",
+    categoryArabic: "النماذج الذهنية وتوجيهات التقييم",
+    title: "فصل كلام الزميل عن العميل واعتماد طلب الأصناف (جابيسكون بتاع الحموضة) للعميل حصرياً",
+    content: "يُشترط التدقيق الصارم في تفريغ المكالمات وفصل كلام الزميل عن العميل عند طرح أسئلة المتابعة وعرض الخدمات الإضافية؛ حيث يُعتمد سؤال 'تمام في حاجة تانية؟' حصرياً للزميل (موظف خدمة العملاء)، بينما تُعتمد الجملة التالية 'ممكن كمان اتنين جابيسكون بتاع الحموضة كيسين يعني مش' ككلام منطوق حصرياً من العميل. ويُمنع منعاً قاطعاً دمج الجملتين في مقطع واحد يُنسب للزميل، أو احتساب لفظ 'بتاع' في 'بتاع الحموضة' كلفظ عامي غير احترافي على الزميل، لكونه منطوقاً من العميل وليس الزميل.",
+    entities: ["جابيسكون", "بتاع الحموضة", "تمام في حاجة تانية", "فصل كلام الزميل والعميل", "unprofessionalWordsAnalysis"],
+    tags: ["فصل_المتحدثين", "جابيسكون", "حموضة", "بتاع", "معيار_مؤكد", "hindsight"],
+    importance: "critical",
+    source: "تأكيد مباشر من المشرف (User Request)",
+    createdAt: "2026-10-15T09:05:00.000Z"
+  },
+  {
+    id: "mem-dir-012",
+    category: "mental_models",
+    categoryArabic: "النماذج الذهنية وتوجيهات التقييم",
+    title: "معيار رصد الكلمات غير الاحترافية: كلمة 'تشوف' ومشتقاتها وتسمياتها",
+    content: "تُدرج كلمة 'تشوف' بمختلف تسمياتها ومشتقاتها وتصريفاتها (تشوف، تشوفي، أشوف، نشوف، يشوف، هشوف، هنشوف، هتشوف، أشوفلك، نشوفلك، شوفلي، إلخ) ضمن الألفاظ العامية غير الاحترافية الواجب رصدها وتنبيه الزميل عليها عند مخاطبة العميل، مع التوجيه لاستخدام البدائل المهنية المعتمدة مثل: 'سأتحقق لحضرتك'، 'هتأكد لحضرتك'، 'سأفحص السيستم'، أو 'هراجع مع الصيدلي المختص'.",
+    entities: ["تشوف", "أشوف", "نشوف", "هشوفلك", "كلمات غير احترافية"],
+    tags: ["كلمات_غير_احترافية", "تشوف", "معيار_مؤكد", "hindsight"],
+    importance: "critical",
+    source: "تأكيد مباشر من المشرف (User Request)",
+    createdAt: "2026-10-03T07:55:00.000Z"
+  },
+  {
+    id: "mem-dir-016",
+    category: "mental_models",
+    categoryArabic: "النماذج الذهنية وتوجيهات التقييم",
+    title: "معيار رصد الكلمات غير الاحترافية: كلمة 'مشكله' (مشكلة) بمختلف تسمياتها ومشتقاتها",
+    content: "تُدرج كلمة 'مشكله' (مشكلة) بمختلف تسمياتها ومشتقاتها ومركباتها (مشكلة، مشكله، المشكلة، مشاكل، مشكلتك، مفيش مشكلة، معندناش مشكلة، إلخ) ضمن الألفاظ السلبية وغير الاحترافية الواجب رصدها وتنبيه الزميل عليها عند التحدث مع العميل، مع التوجيه لاستخدام البدائل المهنية الإيجابية المعتمدة مثل: 'بكل سرور'، 'تحت أمر حضرتك'، 'هنحل الموضوع تماماً'، أو 'ولا يهمك يا فندم'.",
+    entities: ["مشكله", "مشكلة", "مفيش مشكلة", "مشاكل", "كلمات غير احترافية"],
+    tags: ["كلمات_غير_احترافية", "مشكلة", "معيار_مؤكد", "hindsight"],
+    importance: "critical",
+    source: "تأكيد مباشر من المشرف (User Request)",
+    createdAt: "2026-10-03T09:10:00.000Z"
+  },
+  {
+    id: "mem-dir-008",
+    category: "mental_models",
+    categoryArabic: "النماذج الذهنية وتوجيهات التقييم",
+    title: "موضع عرض خدمات أخرى بعد مراجعة الأوردر أو بعد الإجمالي حصراً",
+    content: "معيار عرض خدمات أخرى (مثل: 'تحب أساعدك في حاجة تانية؟'، 'أي خدمة تانية؟') يُشترط لاعتماده أن يكون قد طُرح حصرياً بعد الانتهاء من مراجعة تفاصيل الطلب أو بعد ذكر وإبلاغ العميل بالمبلغ الإجمالي للطلب. يتم استخراج لحظات مراجعة الأوردر والإجمالي وعبارات العرض حرفياً مع أوقاتها من التفريغ دون تقدير.",
+    entities: ["عرض خدمات أخرى", "مراجعة الأوردر", "الإجمالي", "توقيت العرض"],
+    tags: ["خدمات_أخرى", "أوردر", "إجمالي", "معيار_مؤكد", "hindsight"],
+    importance: "critical",
+    source: "تأكيد مباشر من المشرف (User Request)",
+    createdAt: "2026-10-02T21:49:00.000Z"
+  },
+  {
+    id: "mem-dir-007",
+    category: "mental_models",
+    categoryArabic: "النماذج الذهنية وتوجيهات التقييم",
+    title: "تدقيق مناداة اسم العميل ولقبه بالأدلة الحرفية والتوقيت",
+    content: "يُدقق ذكر الزميل لاسم العميل المعتمد أو المستنتج من أول المكالمة (الاسم الأول أو الأخير أو الكامل أو بلقب مع الاسم مثل: 'يا شيماء'، 'يا ست شيماء'، 'ست شيماء'، 'يا أستاذة شيماء'، 'يا مدام شيماء'). يُمنع منعاً باتاً احتساب 'حضرتك' أو 'يا فندم' وحدها كاسم أو لقب، واستبعاد ذكر العميل لاسمه بنفسه أو ذكر اسم شخص آخر. لكل مرة يُشترط ذكر الجملة الكاملة بنسخ حرفي وتوقيتها الدقيق (MM:SS) وتكرار الرصد إذا تكرر الاسم بنفس الجملة، وإذا لم يُذكر يرجع قائمة فارغة.",
+    entities: ["اسم العميل", "لقب العميل", "يا فندم", "مناداة الاسم"],
+    tags: ["اسم_العميل", "ألقاب", "معيار_مؤكد", "hindsight"],
+    importance: "critical",
+    source: "تأكيد مباشر من المشرف (User Request)",
+    createdAt: "2026-10-02T21:48:00.000Z"
+  },
+  {
+    id: "mem-dir-006",
+    category: "mental_models",
+    categoryArabic: "النماذج الذهنية وتوجيهات التقييم",
+    title: "معيار قياس فترات الصمت (Dead Air) وحساب الأوقات الحقيقية",
+    content: "الصمت = وقت بداية كلام السطر التالي ناقص وقت نهاية كلام السطر السابق. يُحسب الصمت بين أي متحدثين (زميل ← عميل، عميل ← زميل، أو نفس المتحدث). استبعاد وتجاهل أي مدة صمت 10 ثوانٍ أو أقل (duration <= 10s)، واحتساب وعرض فترات الصمت التي تزيد عن 10 ثوانٍ فقط (duration > 10s) مع عرض الحساب الدقيق بدون تقدير ولا تقريب. وإذا كان التفريغ خالياً من الأوقات يرجع خطأ {'error': 'no_timestamps'}.",
+    entities: ["لحظات الصمت", "Dead Air", "أكثر من 10 ثواني", "توقيتات"],
+    tags: ["صمت", "أوقات", "معيار_مؤكد", "hindsight"],
+    importance: "critical",
+    source: "تأكيد مباشر من المشرف (User Request)",
+    createdAt: "2026-10-02T21:47:00.000Z"
+  },
+  {
+    id: "mem-dir-005",
+    category: "mental_models",
+    categoryArabic: "النماذج الذهنية وتوجيهات التقييم",
+    title: "الترحيب الحصري بعد المقدمة واستبعاد ما يسبق كلام العميل",
+    content: "المقدمة هي أول كلام الزميل (التحية + اسم الشركة + اسمه). الترحيب المعتمد يأتي حصرياً بعد المقدمة في بداية المكالمة من الزميل فقط (أهلاً وسهلاً، أهلاً، أهلاً بحضرتك، أهلاً يا فندم، نورتنا، شرفتنا، منوّر، حبيبنا). لا يُحسب إذا كان ضمن المقدمة نفسها قبل أن يتحدث العميل، ولا لو قاله العميل، ولا في آخر المكالمة كوداع. إذا لم يُرحب الزميل بعد المقدمة تُرجع قائمة فارغة.",
+    entities: ["الترحيب بعد المقدمة", "المقدمة", "أهلاً بحضرتك", "أهلاً وسهلاً"],
+    tags: ["ترحيب", "مقدمة", "معيار_مؤكد", "hindsight"],
+    importance: "critical",
+    source: "تأكيد مباشر من المشرف (User Request)",
+    createdAt: "2026-10-02T21:44:00.000Z"
+  },
+  {
+    id: "mem-dir-001",
+    category: "mental_models",
+    categoryArabic: "النماذج الذهنية وتوجيهات التقييم",
+    title: "إلزامية إضافة درجة خطوات الاستشارة بجانب اسم المعيار",
+    content: "تم التأكيد بشكل قاطع على وجوب إضافة درجة على حسب ما تم الرد وسؤال العميل عنه من أسئلة الاستشارة الطبية (من 8) ونسبتها المئوية، بجانب اسم المعيار فقط في بطاقة التقييم.",
+    entities: ["خطوات الاستشارة", "الدرجة", "معيار الاستشارة الطبية"],
+    tags: ["استشارة", "درجات", "توجيه_مشرف"],
+    importance: "critical",
+    source: "تأكيد مباشر من المشرف (User Request)",
+    createdAt: "2026-09-28T07:00:00.000Z"
+  },
+  {
+    id: "mem-dir-002",
+    category: "mental_models",
+    categoryArabic: "النماذج الذهنية وتوجيهات التقييم",
+    title: "جدول الأصناف المطلوبة والبدائل والمثائل في مراجعة MEDSCAPE",
+    content: "في المراجعة مع MEDSCAPE، المطلوب إلزامياً عمل جدول متصدر بالأصناف التي طلبها العميل والأصناف التي عرضها الزميل كبديل أو مثيل، يوضح اسم الصنف المطلوب، الصنف المعروض، نوع العلاقة (generic / alternative)، السلامة العلمية، والتحقق المعتمد من Medscape Drug Reference.",
+    entities: ["Medscape", "بدائل", "مثائل", "جدول الأصناف"],
+    tags: ["ميدسكاب", "بدائل", "أدوية", "توجيه_مشرف"],
+    importance: "critical",
+    source: "تأكيد مباشر من المشرف (User Request)",
+    createdAt: "2026-09-29T01:24:00.000Z"
+  },
+  {
+    id: "mem-dir-003",
+    category: "mental_models",
+    categoryArabic: "النماذج الذهنية وتوجيهات التقييم",
+    title: "معيار شكوى العميل: الاعتذار الخاص وسكريبت عدم التكرار",
+    content: "عند رصد أي شكوى من العميل بأي صيغة بالعامية المصرية (تأخير أوردر، صنف ناقص، عيب في صنف)، يلزم النظام بالتحقق الصارم من الاعتذار الخاص بالشكوى، وتطبيق سكريبت ضمان عدم التكرار المعتمد، والتنبيه الفوري في حال إغفال أحدهما.",
+    entities: ["شكوى العميل", "اعتذار خاص", "عدم التكرار", "تأخير الأوردر"],
+    tags: ["شكاوى", "اعتذار", "سكريبت", "جودة"],
+    importance: "critical",
+    source: "معايير الجودة المعتمدة",
+    createdAt: "2026-09-20T10:00:00.000Z"
+  },
+  {
+    id: "mem-wf-001",
+    category: "world_facts",
+    categoryArabic: "حقائق وقواعد الجودة العالمية",
+    title: "ضوابط فترات الهولد وموسيقى الانتظار المعتمدة",
+    content: "مدة الهولد المسموحة 90 ثانية أساسية (و180 ثانية كحد أقصى ممتد عند الاستئذان المسبق لنفس السبب). يجب الاستئذان بعبارة معتمدة، انتظار موافقة العميل، عزف نغمة أو موسيقى الانتظار، وشكر العميل والتأكد من وجوده عند العودة.",
+    entities: ["الهولد", "موسيقى الانتظار", "90 ثانية", "استئذان"],
+    tags: ["هولد", "صمت", "بروتوكول"],
+    importance: "high",
+    source: "بروتوكول كول سنتر صيدليات الطرشوبي",
+    createdAt: "2026-09-20T10:00:00.000Z"
+  },
+  {
+    id: "mem-wf-002",
+    category: "world_facts",
+    categoryArabic: "حقائق وقواعد الجودة العالمية",
+    title: "قواعد الترحيب بالعميل واعتماد المرادفات الترحيبية",
+    content: "يمنع منعاً باتاً احتساب 'لم يتم الترحيب' إذا نطق الزميل أي لفظ ترحيبي مثل 'أهلاً وسهلاً'، 'أهلاً بحضرتك'، 'أهلاً' (بمفردها)، 'أهلاً بيك/بيكي'، 'نورتنا'، 'شرفتنا'، أو رحب بالعميل باسمه بعد حديث العميل.",
+    entities: ["الترحيب", "أهلاً وسهلاً", "أهلاً بحضرتك", "أهلاً", "نورتنا", "شرفتنا"],
+    tags: ["ترحيب", "بروتوكول", "خدمة_عملاء"],
+    importance: "high",
+    source: "قواعد التدقيق القياسية",
+    createdAt: "2026-09-20T10:00:00.000Z"
+  },
+  {
+    id: "mem-obs-001",
+    category: "observations",
+    categoryArabic: "الملاحظات وتفاصيل الأصناف المؤكدة",
+    title: "صيغة تدوين وتفريغ الأصناف ومطابقة MEDSCAPE",
+    content: "عند تفريغ الأصناف المطلوبة من العميل: اكتب ما سُمع صوتياً حتى لو كان خطأً أو مشوشاً متبوعاً بالاسم الأقرب للصحة على Medscape بين قوسين: 'ما سُمع (الاسم الأقرب للصحة)'، مثل: 'كونجستال (Congestal)' و 'اوجمانتين (Augmentin)'.",
+    entities: ["تفريغ الأصناف", "أسماء الأدوية", "كتابة_صوتية"],
+    tags: ["أصناف", "تفريغ", "دقة"],
+    importance: "high",
+    source: "قواعد التدقيق الصيدلاني الصوتي",
+    createdAt: "2026-09-20T10:00:00.000Z"
+  },
+  {
+    id: "mem-exp-001",
+    category: "experiences",
+    categoryArabic: "التجارب والخبرات السابقة",
+    title: "تدقيق المعرفة الصيدلانية لمركبات الضغط (كوتارج وتارج)",
+    content: "في المكالمات السابقة تم تأكيد دقة التمييز بين Tareg 160 (فالسارتان أحادي) و Cotareg 160/12.5 (فالسارتان مع مدر بول هيدروكلوروثيازيد)، مع فحص تداخلات حاصرات مستقبلات الأنجيوتنسين ARBs عبر Medscape Interaction Checker.",
+    entities: ["Cotareg", "Tareg", "فالسارتان", "ضغط الدم"],
+    tags: ["فحص_سابق", "أدوية_ضغط", "خبرة_سابقة"],
+    importance: "medium",
+    source: "سجل التدقيق الصيدلاني المعتمد",
+    createdAt: "2026-09-22T14:30:00.000Z"
+  },
+  {
+    id: "mem-dir-015",
+    category: "experiences",
+    categoryArabic: "التجارب والخبرات السابقة",
+    title: "تأكيد اسم العميلة (فاطمة) ولقبها (أستاذة) وتصحيح خلط لقب دكتورة",
+    content: "تم التأكيد القاطع على أن اسم العميلة في هذه المكالمة هو 'فاطمة' ولقبها التشريفي/المهني المعتمد هو 'أستاذة'. خاطبها الزميل صراحة عند الدقيقة (06:44) بعبارة: 'عفواً يا أستاذة فاطمة، شرفتينا بالاتصال.'. ويُمنع منعاً باتاً اعتماد اسم 'هيدي' أو لقب 'دكتورة' للعميلة؛ حيث إن مناداة العميلة للزميلة بـ 'يا دكتورة' في بداية المكالمة (00:06) هي مخاطبة من العميلة للصيدلانية ولا تعبر عن لقب العميلة، وقد التزم الزميل بمناداة العميلة بلقبها المعتمد (أستاذة) واسمها (فاطمة) عند الختام.",
+    entities: [
+      "فاطمة",
+      "أستاذة",
+      "اسم العميلة",
+      "لقب العميلة",
+      "عفوا يا أستاذة فاطمة"
+    ],
+    tags: [
+      "اسم_العميل",
+      "لقب_العميل",
+      "فاطمة",
+      "أستاذة",
+      "توجيه_مشرف",
+      "hindsight"
+    ],
+    importance: "medium",
+    source: "تأكيد مباشر من المشرف (User Request)",
+    createdAt: "2026-10-03T09:50:00.000Z"
+  }
+];
+
+class HindsightMemoryEngine {
+  private memories: HindsightMemoryEntry[] = [];
+  private isLoaded = false;
+
+  constructor() {
+    this.ensureLoaded();
+  }
+
+  private ensureLoaded(): void {
+    if (this.isLoaded) return;
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+      if (fs.existsSync(BANK_FILE)) {
+        const raw = fs.readFileSync(BANK_FILE, "utf-8");
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          this.memories = parsed;
+          this.isLoaded = true;
+          return;
+        }
+      }
+      // Initialize with default confirmed memories
+      this.memories = [...DEFAULT_CONFIRMED_MEMORIES];
+      this.persist();
+      this.isLoaded = true;
+    } catch (err) {
+      console.error("[Hindsight] Error loading memory bank, using defaults:", err);
+      this.memories = [...DEFAULT_CONFIRMED_MEMORIES];
+      this.isLoaded = true;
+    }
+  }
+
+  private persist(): void {
+    try {
+      if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+      }
+      const tempFile = `${BANK_FILE}.tmp.${process.pid}.${Date.now()}`;
+      fs.writeFileSync(tempFile, JSON.stringify(this.memories, null, 2), "utf-8");
+      fs.renameSync(tempFile, BANK_FILE);
+    } catch (err) {
+      console.error("[Hindsight] Error saving memory bank to disk:", err);
+    }
+  }
+
+  /**
+   * Retrieve all authoritative directives (mental_models and critical rules)
+   * so they are never omitted by relevance-only ranking.
+   */
+  public getAuthoritativeDirectives(): HindsightMemoryEntry[] {
+    this.ensureLoaded();
+    const all = this.memories.filter(
+      (m) => m.category === "mental_models" || m.importance === "critical"
+    );
+    const { kept, dropped } = applyAuthoritativeBudget(all);
+    if (dropped.length > 0) {
+      console.warn(`[Hindsight] Prompt budget exceeded: ${dropped.length} directive(s) were NOT injected (${dropped.map((d) => d.id).join(", ")}). Consolidate or remove memories.`);
+    }
+    return kept;
+  }
+
+  /**
+   * Retain: Store a new fact, experience, observation, or mental model into Hindsight.
+   */
+  public async retain(entry: {
+    category: HindsightMemoryCategory;
+    title: string;
+    content: string;
+    entities?: string[];
+    tags?: string[];
+    importance?: "critical" | "high" | "medium" | "low";
+    source?: string;
+  }): Promise<HindsightMemoryEntry> {
+    this.ensureLoaded();
+
+    const normalizedTitle = entry.title.trim();
+    const normalizedContent = entry.content.trim();
+
+    // B-003: Prevent duplicate directives if title and content match an existing entry
+    const existingDuplicate = this.memories.find(
+      (m) =>
+        m.title.trim().toLowerCase() === normalizedTitle.toLowerCase() &&
+        m.content.trim().toLowerCase() === normalizedContent.toLowerCase()
+    );
+    if (existingDuplicate) {
+      return existingDuplicate;
+    }
+
+    const categoryArabicMap: Record<HindsightMemoryCategory, string> = {
+      world_facts: "حقائق وقواعد الجودة العالمية",
+      experiences: "التجارب والخبرات السابقة",
+      observations: "الملاحظات وتفاصيل الأصناف المؤكدة",
+      mental_models: "النماذج الذهنية وتوجيهات التقييم"
+    };
+
+    const newMemory: HindsightMemoryEntry = {
+      id: `mem-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      category: entry.category,
+      categoryArabic: categoryArabicMap[entry.category] || "توجيه مؤكد",
+      title: normalizedTitle,
+      content: normalizedContent,
+      entities: entry.entities || [],
+      tags: entry.tags || [],
+      importance: entry.importance || "high",
+      source: entry.source || "تأكيد المشرف",
+      createdAt: new Date().toISOString()
+    };
+
+    // Push to local memory array (prepend to keep latest on top)
+    this.memories.unshift(newMemory);
+    this.persist();
+
+    // Try sending to official Hindsight client if reachable
+    try {
+      const client = await getHindsightClient();
+      if (client && typeof client.retain === "function") {
+        await client.retain({
+          content: `${newMemory.title}: ${newMemory.content}`,
+          context: `Category: ${newMemory.category}, Source: ${newMemory.source}`
+        });
+        console.log(`[Hindsight Client] Memory retained remotely: ${newMemory.title}`);
+      }
+    } catch (clientErr: any) {
+      console.warn(`[Hindsight Client] Remote retain skipped: ${clientErr?.message || clientErr}`);
+    }
+
+    return newMemory;
+  }
+
+  /**
+   * Recall: Retrieve relevant memories matching a query/context with similarity scores.
+   */
+  public async recall(
+    query: string, 
+    options?: { limit?: number; category?: HindsightMemoryCategory; minRelevance?: number }
+  ): Promise<HindsightRecallResult> {
+    this.ensureLoaded();
+
+    const limit = options?.limit || 6;
+    const minRelevance = options?.minRelevance || 0.15;
+    const queryTokens = this.tokenize(query);
+
+    // Compute relevance scores using biomimetic weighting (importance + token matching + category priority)
+    const scoredMemories = this.memories
+      .filter((mem) => !options?.category || mem.category === options.category)
+      .map((mem) => {
+        const memText = `${mem.title} ${mem.content} ${(mem.entities || []).join(" ")} ${(mem.tags || []).join(" ")}`;
+        const memTokens = this.tokenize(memText);
+
+        let matches = 0;
+        for (const token of queryTokens) {
+          if (memTokens.some((t) => t.includes(token) || token.includes(t))) {
+            matches++;
+          }
+        }
+
+        // Base token overlap score
+        let score = queryTokens.length > 0 ? (matches / Math.sqrt(queryTokens.length * Math.min(memTokens.length, 25))) : 0.5;
+
+        // Importance boost
+        if (mem.importance === "critical") score += 0.35;
+        else if (mem.importance === "high") score += 0.2;
+        else if (mem.importance === "medium") score += 0.1;
+
+        // Mental models (directives confirmed by user) receive highest recall priority
+        if (mem.category === "mental_models") score += 0.25;
+
+        return {
+          ...mem,
+          relevanceScore: Math.min(Math.round(score * 100) / 100, 1.0)
+        };
+      });
+
+    // Sort by relevance score descending
+    scoredMemories.sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
+
+    // Filter by minRelevance or take top entries
+    let recalled = scoredMemories.filter((m) => (m.relevanceScore || 0) >= minRelevance);
+    if (recalled.length === 0 && scoredMemories.length > 0) {
+      // Fallback to top critical directives
+      recalled = scoredMemories.slice(0, 3);
+    }
+    recalled = recalled.slice(0, limit);
+
+    // Format prompt injection string
+    const promptInjectionSnippet = this.formatRecalledForPrompt(recalled);
+
+    return {
+      query,
+      totalMemories: this.memories.length,
+      recalledCount: recalled.length,
+      memories: recalled,
+      promptInjectionSnippet
+    };
+  }
+
+  /**
+   * Format recalled memories into a high-authority prompt injection block for Gemini.
+   */
+  public formatRecalledForPrompt(recalled: HindsightMemoryEntry[]): string {
+    if (!recalled || recalled.length === 0) return "";
+
+    const lines: string[] = [
+      "=== ذاكرة النظام المستمرة (HINDSIGHT RECALLED MEMORIES & DIRECTIVES) ===",
+      "تنبيه فائق الأهمية لموديل الذكاء الاصطناعي: هذه الذاكرة مسترجعة من بنك الذاكرة الدائمة للنظام (Hindsight Agent Memory) وتتضمن تفاصيل وتوجيهات وقواعد أكد عليها المشرف في جلسات سابقة. يجب الالتزام التام والحرفي بكل قاعدة وملاحظة مسترجعة أدناه أثناء التقييم والتفريغ:",
+      ""
+    ];
+
+    recalled.forEach((mem, idx) => {
+      lines.push(`${idx + 1}. [${mem.categoryArabic} - ${mem.importance.toUpperCase()}]: ${mem.title}`);
+      lines.push(`   * التفصيل المؤكد: ${mem.content}`);
+      lines.push(`   * المصدر: ${mem.source}`);
+      if (mem.entities && mem.entities.length > 0) {
+        lines.push(`   * الكيانات المرتبطة: ${mem.entities.join(", ")}`);
+      }
+      lines.push("");
+    });
+
+    lines.push("=== نهاية الذاكرة المسترجعة ===");
+    return lines.join("\n");
+  }
+
+  /**
+   * List memories with optional filtering.
+   */
+  public listMemories(filter?: { category?: HindsightMemoryCategory; search?: string }): HindsightMemoryEntry[] {
+    this.ensureLoaded();
+    let result = [...this.memories];
+
+    if (filter?.category) {
+      result = result.filter((m) => m.category === filter.category);
+    }
+
+    if (filter?.search && filter.search.trim()) {
+      const q = filter.search.toLowerCase().trim();
+      result = result.filter(
+        (m) =>
+          m.title.toLowerCase().includes(q) ||
+          m.content.toLowerCase().includes(q) ||
+          (m.entities || []).some((e) => e.toLowerCase().includes(q)) ||
+          (m.tags || []).some((t) => t.toLowerCase().includes(q))
+      );
+    }
+
+    return result;
+  }
+
+  /**
+   * Delete a memory item by ID.
+   */
+  public deleteMemory(id: string): boolean {
+    this.ensureLoaded();
+    const initialLen = this.memories.length;
+    this.memories = this.memories.filter((m) => m.id !== id);
+    if (this.memories.length !== initialLen) {
+      this.persist();
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Reset memories to certified defaults.
+   */
+  public resetToDefaults(): void {
+    this.memories = [...DEFAULT_CONFIRMED_MEMORIES];
+    this.persist();
+  }
+
+  /**
+   * Get bank statistics.
+   */
+  public getStats(): HindsightBankStats {
+    this.ensureLoaded();
+    return {
+      total: this.memories.length,
+      worldFactsCount: this.memories.filter((m) => m.category === "world_facts").length,
+      experiencesCount: this.memories.filter((m) => m.category === "experiences").length,
+      observationsCount: this.memories.filter((m) => m.category === "observations").length,
+      mentalModelsCount: this.memories.filter((m) => m.category === "mental_models").length,
+      lastRetainedAt: this.memories[0]?.createdAt
+    };
+  }
+
+  private tokenize(text: string): string[] {
+    if (!text) return [];
+    return text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 2);
+  }
+}
+
+// Export singleton instance
+export const hindsightEngine = new HindsightMemoryEngine();

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/qa-logo.png" />
+    <title>تدقيق جودة مكالمات الكول سنتر</title>
+    <meta name="description" content="برنامج لتفريغ وتحليل جودة مكالمات الكول سنتر بالعامية المصرية بالذكاء الاصطناعي (Gemini) مع كشف الصمت والهولد، وتدقيق ومطابقة ريسيت الفاتورة بتقنية OCR، وتصدير تقارير التقييم بصيغة Excel." />
+    <meta property="og:title" content="تدقيق جودة مكالمات الكول سنتر" />
+    <meta property="og:description" content="برنامج لتفريغ وتحليل جودة مكالمات الكول سنتر بالعامية المصرية بالذكاء الاصطناعي (Gemini) مع كشف الصمت والهولد، وتدقيق ومطابقة ريسيت الفاتورة بتقنية OCR، وتصدير تقارير التقييم بصيغة Excel." />
+    <script>
+      (function() {
+        try {
+          var origDef = Object.defineProperty;
+          Object.defineProperty = function(obj, prop, desc) {
+            if (obj === window && prop === 'fetch' && desc && !('configurable' in desc)) {
+              desc = Object.assign({}, desc, { configurable: true });
+            }
+            return origDef.call(this, obj, prop, desc);
+          };
+        } catch (e) {}
+        try {
+          var saved = localStorage.getItem('app_theme');
+          if (saved === 'dark' || (!saved && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
+
